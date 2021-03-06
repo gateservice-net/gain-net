@@ -14,11 +14,10 @@ mod flat;
 
 use flatbuffers::{get_root, FlatBufferBuilder};
 use gain::service::Service;
-use gain::stream::buf::{Buf, Read, ReadStream};
-use gain::stream::RecvWriteStream;
+use gain::stream::{CloseStream, Recv, RecvOnlyStream, RecvStream, RecvWriteStream};
+use std::cell::{Cell, RefCell};
+use std::fmt;
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-
-pub use flat::{AcceptError, BindError};
 
 const ACCEPT_SIZE: usize = flat::AcceptSize::Basic as usize;
 
@@ -26,10 +25,39 @@ lazy_static! {
     static ref SERVICE: Service = Service::register("savo.la/gate/listener");
 }
 
-/// Connection listener.
-pub struct Listener {
-    stream: ReadStream,
+/// Binding options.
+pub struct BindOptions<'a> {
+    _internal: (),
 
+    /// Listening port.
+    pub port: u16,
+
+    /// Server name prefix.
+    pub prefix: Option<&'a str>,
+}
+
+impl<'a> BindOptions<'a> {
+    /// Default binding options.
+    pub fn new(port: u16) -> Self {
+        Self {
+            _internal: (),
+            port,
+            prefix: None,
+        }
+    }
+
+    /// Opt for a more descriptive server name.
+    pub fn with_prefix(prefix: &'a str, port: u16) -> Self {
+        Self {
+            _internal: (),
+            port,
+            prefix: Some(prefix),
+        }
+    }
+}
+
+/// Listener address.
+pub struct Binding {
     /// Fully-qualified DNS name of the server.
     pub hostname: String,
 
@@ -37,27 +65,24 @@ pub struct Listener {
     pub port: u16,
 }
 
-impl Listener {
-    /// Listen to TLS connections at the specified `port`.  The DNS name can be
-    /// discovered from the `hostname` field of the created instance.  A custom
-    /// prefix may be prepended to the name.
-    ///
-    /// If `prefix` is specified, its length must be between 1 and 31
-    /// characters (inclusive), and it must consist of lowercase alphanumeric
-    /// ASCII characters and dash (`-`).  It must not start or end with dash.
-    /// It must not start with `xn--`.
-    ///
-    /// `buflen` specifies the minimum accept queue length.
-    pub async fn bind_tls(
-        prefix: Option<&str>,
-        port: u16,
-        buflen: usize,
-    ) -> Result<Self, BindError> {
-        let bufsize = ACCEPT_SIZE.checked_mul(buflen.max(1)).unwrap();
+/// Connection listener.
+pub struct Listener {
+    stream: RecvStream,
+    pub addr: Binding,
+}
 
+impl Listener {
+    /// Listen to TLS connections at `BindOptions::port`.  The fully-qualified
+    /// DNS name can be discovered from the `Listener::hostname` field.
+    ///
+    /// If specified, `BindOptions::prefix` is prepended to the server name.
+    /// Its length must be between 1 and 31 characters (inclusive), and it must
+    /// consist of lowercase alphanumeric ASCII characters and dash (`-`).  It
+    /// must not start or end with a dash.  It must not start with `xn--`.
+    pub async fn bind_tls(opt: BindOptions<'_>) -> Result<Self, BindError> {
         let mut b = FlatBufferBuilder::new();
 
-        let name = match prefix {
+        let prefix = match opt.prefix {
             Some(s) => Some(b.create_string(s)),
             None => None,
         };
@@ -66,8 +91,8 @@ impl Listener {
             &mut b,
             &flat::BindTLSArgs {
                 accept_size: flat::AcceptSize::Basic,
-                name: name,
-                port: port,
+                name: prefix,
+                port: opt.port,
             },
         );
 
@@ -83,38 +108,80 @@ impl Listener {
 
         SERVICE
             .call(b.finished_data(), |reply: &[u8]| {
-                let r = get_root::<flat::Binding>(reply);
-
-                if r.error() != BindError::None {
-                    return Err(r.error());
+                if reply.is_empty() {
+                    return Err(BindError::unsupported_call());
                 }
 
-                let stream = SERVICE.input_stream(r.listen_id());
+                let r = get_root::<flat::Binding>(reply);
+
+                if r.error() != flat::BindError::None {
+                    if r.error() == flat::BindError::InvalidAcceptSize {
+                        panic!("invalid accept size");
+                    }
+                    return Err(BindError::new(r.error()));
+                }
+
+                let service = SERVICE.input_stream(r.listen_id());
 
                 Ok(Self {
-                    stream: ReadStream::with_capacity(bufsize, stream),
-                    hostname: r.host().unwrap().into(),
-                    port: r.port(),
+                    stream: service,
+                    addr: Binding {
+                        hostname: r.host().unwrap().into(),
+                        port: r.port(),
+                    },
                 })
             })
             .await
     }
 
-    /// Accept a client connection.
+    /// Accept a client connection.  An `AcceptErrorKind::Closed` error may
+    /// occur due to environmental causes.
     pub async fn accept(&mut self) -> Result<Conn, AcceptError> {
-        match self
-            .stream
-            .buf_read(
-                ACCEPT_SIZE,
-                |buf: &mut Buf| -> Option<Result<Conn, AcceptError>> {
-                    let r = get_root::<flat::Accept>(&buf.as_slice()[..ACCEPT_SIZE])
-                        .basic()
-                        .unwrap();
+        accept(&mut self.stream).await
+    }
 
-                    if r.error() != AcceptError::None {
-                        return Some(Err(r.error()));
-                    }
+    /// Detach the closing functionality.  When the `CloseStream` is closed or
+    /// dropped, the `Acceptor` will return an `AcceptErrorKind::Closed` error.
+    pub fn split(self) -> (Acceptor, CloseStream) {
+        let (stream, c) = self.stream.split();
+        (
+            Acceptor {
+                stream,
+                addr: self.addr,
+            },
+            c,
+        )
+    }
+}
 
+/// Connection acceptor.
+pub struct Acceptor {
+    stream: RecvOnlyStream,
+    pub addr: Binding,
+}
+
+impl Acceptor {
+    /// Accept a client connection.  An `AcceptErrorKind::Closed` error may be
+    /// caused by the associated `CloseStream`, or other environmental reasons.
+    pub async fn accept(&mut self) -> Result<Conn, AcceptError> {
+        accept(&mut self.stream).await
+    }
+}
+
+async fn accept<R: Recv>(stream: &mut R) -> Result<Conn, AcceptError> {
+    let result = Cell::new(Some(Err(AcceptError::listener_closed())));
+    let buffer = RefCell::new(Vec::with_capacity(ACCEPT_SIZE));
+
+    let _ = stream
+        .recv(ACCEPT_SIZE, |data: &[u8], _: i32| {
+            let mut b = buffer.borrow_mut();
+            b.extend_from_slice(data);
+
+            let more = ACCEPT_SIZE - b.len();
+            if more == 0 {
+                let r = get_root::<flat::Accept>(b.as_slice()).basic().unwrap();
+
+                result.set(Some(if r.error() == flat::AcceptError::None {
                     let stream = SERVICE.stream(r.conn_id());
 
                     let ip = r.addr();
@@ -134,25 +201,125 @@ impl Listener {
                         SocketAddr::V6(SocketAddrV6::new(ipv6, r.port(), 0, 0))
                     };
 
-                    buf.consume(ACCEPT_SIZE);
-
-                    Some(Ok(Conn {
+                    Ok(Conn {
+                        _internal: (),
                         stream: stream,
                         peer_addr: addr,
-                    }))
-                },
-            )
-            .await
-            .unwrap()
-        {
-            Some(x) => x,
-            None => Err(AcceptError::None),
-        }
-    }
+                    })
+                } else {
+                    Err(AcceptError::new(r.error()))
+                }));
+            }
+
+            more
+        })
+        .await;
+
+    result.take().unwrap()
 }
 
 /// Client connection.
 pub struct Conn {
+    _internal: (),
+
+    /// I/O stream for exchanging data with the client.
     pub stream: RecvWriteStream,
+
+    /// The client connection's address.
     pub peer_addr: SocketAddr,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum BindErrorKind {
+    Other,
+    TooManyBindings,
+    AlreadyBound,
+    InvalidName,
+    NameTooLong,
+    UnsupportedPort,
+}
+
+#[derive(Debug)]
+pub struct BindError {
+    flat: flat::BindError,
+}
+
+impl BindError {
+    fn new(flat: flat::BindError) -> Self {
+        Self { flat }
+    }
+
+    fn unsupported_call() -> Self {
+        Self::new(flat::BindError::None)
+    }
+
+    pub fn kind(&self) -> BindErrorKind {
+        match self.flat {
+            flat::BindError::TooManyBindings => BindErrorKind::TooManyBindings,
+            flat::BindError::AlreadyBound => BindErrorKind::AlreadyBound,
+            flat::BindError::InvalidName => BindErrorKind::InvalidName,
+            flat::BindError::NameTooLong => BindErrorKind::NameTooLong,
+            flat::BindError::UnsupportedPort => BindErrorKind::UnsupportedPort,
+            _ => BindErrorKind::Other,
+        }
+    }
+
+    pub fn as_i16(&self) -> i16 {
+        self.flat as i16
+    }
+}
+
+impl fmt::Display for BindError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        match self.kind() {
+            BindErrorKind::TooManyBindings => f.write_str("too many bindings"),
+            BindErrorKind::AlreadyBound => f.write_str("already bound"),
+            BindErrorKind::InvalidName => f.write_str("invalid name"),
+            BindErrorKind::NameTooLong => f.write_str("name too long"),
+            BindErrorKind::UnsupportedPort => f.write_str("unsupported port"),
+            _ => self.as_i16().fmt(f),
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum AcceptErrorKind {
+    Closed,
+    Other,
+}
+
+#[derive(Debug)]
+pub struct AcceptError {
+    flat: flat::AcceptError,
+}
+
+impl AcceptError {
+    fn new(flat: flat::AcceptError) -> Self {
+        Self { flat }
+    }
+
+    fn listener_closed() -> Self {
+        Self::new(flat::AcceptError::None)
+    }
+
+    pub fn kind(&self) -> AcceptErrorKind {
+        #[allow(unreachable_patterns)]
+        match self.flat {
+            flat::AcceptError::None => AcceptErrorKind::Closed,
+            _ => AcceptErrorKind::Other,
+        }
+    }
+
+    pub fn as_i16(&self) -> i16 {
+        self.flat as i16
+    }
+}
+
+impl fmt::Display for AcceptError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        match self.kind() {
+            AcceptErrorKind::Closed => f.write_str("closed"),
+            _ => self.as_i16().fmt(f),
+        }
+    }
 }

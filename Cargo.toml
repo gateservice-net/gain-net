@@ -1,6 +1,6 @@
 [package]
 name = "gain-listener"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Timo Savola <timo.savola@iki.fi>"]
 edition = "2018"
 description = "Client API for savo.la/gate/listener service."
@@ -12,7 +12,7 @@ license = "BSD-3-Clause"
 
 [dependencies]
 flatbuffers = "0.6.0"
-gain = "0.3.0"
+gain = "0.4.0"
 lazy_static = "1.4.0"
 
 [dev-dependencies]

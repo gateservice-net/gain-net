@@ -4,11 +4,12 @@
 
 use chrono::Utc;
 use gain::origin;
-use gain::stream::buf::{Read, ReadStream};
-use gain::stream::{Close, Write, WriteOnlyStream, WriteStream};
+use gain::stream::buf::{Read as _, ReadStream};
+use gain::stream::{Close as _, Write as _, WriteOnlyStream, WriteStream};
 use gain::task::block_on;
-use gain_listener::Listener;
+use gain_listener::{AcceptErrorKind, Acceptor, BindOptions, Listener};
 use httparse::{Request, EMPTY_HEADER};
+use std::io::{stdout, Write as _};
 use std::net::SocketAddr;
 
 fn main() {
@@ -16,20 +17,39 @@ fn main() {
         let log = origin::accept().await.unwrap();
         let (_, mut log) = log.split();
 
-        let mut lis = Listener::bind_tls(Some("www"), 443, 1).await.unwrap();
-
-        log.write(format!("Host: {}\n", lis.hostname).as_bytes())
+        let lis = Listener::bind_tls(BindOptions::with_prefix("www", 443))
             .await
             .unwrap();
 
+        log.write(format!("Host: {}\n", lis.addr.hostname).as_bytes())
+            .await
+            .unwrap();
+
+        let (mut acc, close) = lis.split();
+
         loop {
-            handle_conn(&mut log, &mut lis).await;
+            println!("main loop");
+            if !handle_conn(&mut log, &mut acc).await {
+                break;
+            }
         }
+
+        println!("listener closed");
+        drop(close);
     });
 }
 
-async fn handle_conn(mut log: &mut WriteStream, lis: &mut Listener) {
-    let conn = lis.accept().await.unwrap();
+async fn handle_conn(mut log: &mut WriteStream, acc: &mut Acceptor) -> bool {
+    let conn = match acc.accept().await {
+        Ok(conn) => conn,
+        Err(e) => match e.kind() {
+            AcceptErrorKind::Closed => return false,
+            _ => panic!(e),
+        },
+    };
+
+    println!("conn accepted");
+
     let (r, w) = conn.stream.split();
     let (mut w, mut c) = w.split();
 
@@ -43,19 +63,31 @@ async fn handle_conn(mut log: &mut WriteStream, lis: &mut Listener) {
             Ok(n) => len += n,
             Err(e) => {
                 println!("read error: {}", e);
-                return;
+                return true;
             }
         }
 
         let mut headers = [EMPTY_HEADER; 100];
         let mut req = Request::new(&mut headers);
-        if !req.parse(&buf[..len]).unwrap().is_partial() {
-            handle_request(&mut log, &lis.hostname, &mut w, conn.peer_addr, req).await;
-            break;
+        match req.parse(&buf[..len]) {
+            Ok(result) => {
+                if !result.is_partial() {
+                    handle_request(&mut log, &acc.addr.hostname, &mut w, conn.peer_addr, req).await;
+                    break;
+                }
+            }
+            Err(e) => {
+                println!("parse error: {}", e);
+                stdout().flush().unwrap();
+                return true;
+            }
         }
     }
 
-    c.close().await.unwrap();
+    println!("closing conn");
+    c.close().await;
+    println!("conn closed");
+    true
 }
 
 async fn handle_request(
