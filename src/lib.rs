@@ -73,7 +73,7 @@ pub struct Listener {
 
 impl Listener {
     /// Listen to TLS connections at `BindOptions::port`.  The fully-qualified
-    /// DNS name can be discovered from the `Listener::hostname` field.
+    /// DNS name can be discovered from the `Listener::addr.hostname` field.
     ///
     /// If specified, `BindOptions::prefix` is prepended to the server name.
     /// Its length must be between 1 and 31 characters (inclusive), and it must
