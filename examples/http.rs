@@ -44,7 +44,7 @@ async fn handle_conn(mut log: &mut WriteStream, acc: &mut Acceptor) -> bool {
         Ok(conn) => conn,
         Err(e) => match e.kind() {
             AcceptErrorKind::Closed => return false,
-            _ => panic!(e),
+            _ => panic!("{}", e),
         },
     };
 
