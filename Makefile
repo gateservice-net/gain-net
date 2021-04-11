@@ -1,9 +1,13 @@
 CARGO		:= cargo
 FLATC		:= flatc
 
-.PHONY: build
-build:
+.PHONY: debug
+debug:
 	$(CARGO) build --target=wasm32-wasi --examples
+
+.PHONY: release
+release:
+	$(CARGO) build --target=wasm32-wasi --examples --release
 
 .PHONY: generate
 generate:
