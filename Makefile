@@ -11,7 +11,7 @@ release:
 
 .PHONY: generate
 generate:
-	$(FLATC) --rust -o src ../gate-listener/listener.fbs
+	$(FLATC) --rust -o gain-listener/src ../gate-listener/listener.fbs
 
 .PHONY: clean
 clean:
