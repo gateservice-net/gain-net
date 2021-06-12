@@ -1,13 +1,13 @@
 CARGO		:= cargo
 FLATC		:= flatc
 
-.PHONY: debug
-debug:
-	$(CARGO) build --target=wasm32-wasi --examples
+.PHONY: debug release
+debug release:
+	$(CARGO) build --target=wasm32-wasi $(patsubst --debug,,--$@)
+	$(CARGO) build --target=wasm32-wasi --examples $(patsubst --debug,,--$@)
 
-.PHONY: release
-release:
-	$(CARGO) build --target=wasm32-wasi --examples --release
+.PHONY: all
+all: debug release
 
 .PHONY: generate
 generate:
@@ -15,5 +15,4 @@ generate:
 
 .PHONY: clean
 clean:
-	rm -f Cargo.lock
-	rm -rf target
+	rm -rf Cargo.lock target

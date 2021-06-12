@@ -7,19 +7,19 @@
 #[macro_use]
 extern crate lazy_static;
 
-// The schema file can be found at https://gateservice.net/listener
-#[allow(unused, unused_imports)]
-#[path = "listener_generated.rs"]
-mod flat;
-
-use flatbuffers::{get_root, FlatBufferBuilder};
+use flatbuffers::{root, FlatBufferBuilder};
 use gain::service::Service;
 use gain::stream::{CloseStream, Recv, RecvOnlyStream, RecvStream, RecvWriteStream};
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
-const ACCEPT_SIZE: usize = flat::AcceptSize::Basic as usize;
+// The schema file can be found at https://gateservice.net/listener
+#[allow(unused, unused_imports)]
+#[path = "listener_generated.rs"]
+mod flat;
+
+const ACCEPT_SIZE: usize = flat::AcceptSize::Basic.0 as usize;
 
 lazy_static! {
     static ref SERVICE: Service = Service::register("gateservice.net/listener");
@@ -112,7 +112,7 @@ impl Listener {
                     return Err(BindError::unsupported_call());
                 }
 
-                let r = get_root::<flat::Binding>(reply);
+                let r = root::<flat::Binding>(reply).unwrap();
 
                 if r.error() != flat::BindError::None {
                     if r.error() == flat::BindError::InvalidAcceptSize {
@@ -121,10 +121,10 @@ impl Listener {
                     return Err(BindError::new(r.error()));
                 }
 
-                let service = SERVICE.input_stream(r.listen_id());
+                let stream = SERVICE.input_stream(r.listen_id());
 
                 Ok(Self {
-                    stream: service,
+                    stream: stream,
                     addr: Binding {
                         hostname: r.host().unwrap().into(),
                         port: r.port(),
@@ -179,7 +179,7 @@ async fn accept<R: Recv>(stream: &mut R) -> Result<Conn, AcceptError> {
 
             let more = ACCEPT_SIZE - b.len();
             if more == 0 {
-                let r = get_root::<flat::Accept>(b.as_slice()).basic().unwrap();
+                let r = root::<flat::Accept>(b.as_slice()).unwrap().basic().unwrap();
 
                 result.set(Some(if r.error() == flat::AcceptError::None {
                     let stream = SERVICE.stream(r.conn_id());
@@ -265,7 +265,7 @@ impl BindError {
     }
 
     pub fn as_i16(&self) -> i16 {
-        self.flat as i16
+        self.flat.0
     }
 }
 
@@ -311,7 +311,7 @@ impl AcceptError {
     }
 
     pub fn as_i16(&self) -> i16 {
-        self.flat as i16
+        self.flat.0
     }
 }
 
