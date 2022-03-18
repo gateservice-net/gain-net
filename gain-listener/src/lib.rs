@@ -77,8 +77,9 @@ impl Listener {
     ///
     /// If specified, `BindOptions::prefix` is prepended to the server name.
     /// Its length must be between 1 and 31 characters (inclusive), and it must
-    /// consist of lowercase alphanumeric ASCII characters and dash (`-`).  It
-    /// must not start or end with a dash.  It must not start with `xn--`.
+    /// consist of lowercase alphanumeric ASCII characters and dashes (`-`).
+    /// It must not start or end with a dash, nor contain multiple consecutive
+    /// dashes.
     pub async fn bind_tls(opt: BindOptions<'_>) -> Result<Self, BindError> {
         let mut b = FlatBufferBuilder::new();
 
