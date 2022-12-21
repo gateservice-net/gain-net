@@ -15,4 +15,5 @@ generate:
 
 .PHONY: clean
 clean:
-	rm -rf Cargo.lock target
+	$(CARGO) clean
+	rm -f Cargo.lock

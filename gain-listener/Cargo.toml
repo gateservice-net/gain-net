@@ -11,7 +11,7 @@ categories = ["api-bindings", "asynchronous", "network-programming"]
 license = "MIT"
 
 [dependencies]
-flatbuffers = "2.0.0"
+flatbuffers = "22.10.26"
 gain = "0.4.0"
 lazy_static = "1.4.0"
 
