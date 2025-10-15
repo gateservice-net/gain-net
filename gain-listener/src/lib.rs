@@ -14,7 +14,6 @@ use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
-// The schema file can be found at https://gateservice.net/listener
 #[allow(unused, unused_imports)]
 #[path = "listener_generated.rs"]
 mod flat;
@@ -22,7 +21,7 @@ mod flat;
 const ACCEPT_SIZE: usize = flat::AcceptSize::Basic.0 as usize;
 
 lazy_static! {
-    static ref SERVICE: Service = Service::register("gateservice.net/listener");
+    static ref SERVICE: Service = Service::register("7c2eddb7-9748-4a7c-a402-70c0c0a7fb15");
 }
 
 /// Binding options.
